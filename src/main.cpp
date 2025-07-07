@@ -35,6 +35,7 @@ void config_timer(){
 
 extern "C" void app_main(){
     //Configuración de Perifericos
+    // Configure the GPIO for motor TURN
     gpio_config_t motor_turn_config = {};
     motor_turn_config.pin_bit_mask = (1ULL << PIN_TURN);
     motor_turn_config.mode = GPIO_MODE_OUTPUT;
@@ -43,6 +44,7 @@ extern "C" void app_main(){
     motor_turn_config.intr_type = GPIO_INTR_DISABLE;
     gpio_config(&motor_turn_config);
 
+    //Configure the GPIO for motor PWM control (ENB)
     gpio_config_t motor_enb_config = {};
     motor_enb_config.pin_bit_mask = (1ULL << PIN_ENB);
     motor_enb_config.mode = GPIO_MODE_OUTPUT;
@@ -66,17 +68,23 @@ extern "C" void app_main(){
 
     //loop
     while(1){
+        // Set motor TURN high (CCW)
+        gpio_set_level(PIN_TURN, 1);
+        
         // Set motor ENB high
         ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, 4095); // Set duty cycle to maximum (100%)
         ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
         
-        // Set motor TURN high (CCW)
-        gpio_set_level(PIN_TURN, 1);
-        /*
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for 1 second
-        // Set motor TURN low (CW)
-        gpio_set_level(PIN_TURN, 0);
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for 1 second
-        */
+        vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for 2 seconds
+
+        ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, 3276); // Set duty cycle to maximum (80%)
+        ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
+
+        vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for 2 seconds
+
+        ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, 2457); // Set duty cycle to maximum (60%)
+        ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
+
+        vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for 2 seconds
     }
 }
