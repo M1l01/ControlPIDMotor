@@ -4,6 +4,8 @@
 #include <esp_err.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_timer.h>
+#include <stdatomic.h>
 
 //-------- Define GPIO pins ----------
 //Define GPIOs to control a motor driver (L298N)
@@ -21,10 +23,13 @@
 
 #define CHANNEL_EN LEDC_CHANNEL_0 // Channel for the PWM signal
 
+//Constants for the encoder
+#define PPR 374
+
 // Global Variables
 
 //Variables to handle the encoder detection
-int16_t encoder_count = 0; // Variable to count encoder ticks (11 ticks per revolution)
+atomic_int ticks_count = 0; // Protected variable to count encoder ticks (374 ticks per revolution)
 bool encoder_direction = true; // Variable to identify the direction of the motor (true for CCW, false for CW)
 
 //-------- Function Prototypes --------
@@ -67,21 +72,45 @@ extern "C" void app_main(){
     // Initialize the encoder interrupt of channel A
     init_irs();
 
+    // Local Variables
+    // Velocity measure variables
+    int last_ticks = 0;
+    int current_ticks = 0;
+    int delta_ticks = 0;
+
+    int64_t last_time = esp_timer_get_time(); // Get the current time in microseconds
+    int64_t current_time; // Variable to store the current time
+    double delta_time_sec;
+    double velocity_rpm; // Variable to store the velocity in RPM
+
+    // Set motor TURN high (CCW)
+    gpio_set_level(PIN_TURN, 1);
+    // Set the motor ENB high in 60% duty cycle
+    ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, 2800); // Set duty cycle to maximum (60%)
+    ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
+
     //loop
     while(1){
-        // Set motor TURN high (CCW)
-        gpio_set_level(PIN_TURN, 1);
+        vTaskDelay(pdMS_TO_TICKS(500)); // Delay for 500 milliseconds
         
-        // Set motor ENB high in 60% duty cycle
-        ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, 2457); // Set duty cycle to maximum (60%)
-        ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
+        // Read the current ticks count
+        current_ticks = atomic_load(&ticks_count); // Atomically read the ticks count
 
-        //Print the encoder count and direction
-        printf("Encoder Count: %d\n", encoder_count);
-        printf("Revoluciones: %d\n", encoder_count / 11);
-        printf("Direction: %s\n", encoder_direction ? "CCW" : "CW");
+        // Calculate the difference in ticks
+        delta_ticks = current_ticks - last_ticks;
+        last_ticks = current_ticks; // Update last ticks for the next iteration
 
-        vTaskDelay(pdMS_TO_TICKS(10)); // Whatchdog delay to prevent task starvation
+        // Get the current time in microseconds
+        current_time = esp_timer_get_time(); // Get the current time in microseconds
+        delta_time_sec = (current_time - last_time) / 1e6; // Calculate the time difference in seconds
+        last_time = current_time; // Update last time for the next iteration
+
+        // Calculate the velocity in RPM
+        double revolutions = (double)delta_ticks / PPR; // Convert ticks to revolutions
+        velocity_rpm = (revolutions / delta_time_sec) * 60.0;
+
+        printf("Delta Time: %.2f seconds\n", delta_time_sec);
+        printf("Velocity: %.2f RPM\n", velocity_rpm);
     }
 }
 
@@ -133,7 +162,7 @@ esp_err_t init_irs(void) {
 // This function will be called in the ISR
 void isr_handler(void *arg) {
     //Increment the encoder count
-    encoder_count++;
+    atomic_fetch_add(&ticks_count, 1); // Atomically increment the ticks count
     // Check the state of channel B to determine direction
     int level_b = gpio_get_level(PIN_ENC_B);
     if (level_b == 1) {
