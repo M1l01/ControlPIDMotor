@@ -74,8 +74,6 @@ extern "C" void app_main(){
 
     // Local Variables
     // Velocity measure variables
-    int last_ticks = 0;
-    int current_ticks = 0;
     int delta_ticks = 0;
 
     int64_t last_time = esp_timer_get_time(); // Get the current time in microseconds
@@ -91,14 +89,10 @@ extern "C" void app_main(){
 
     //loop
     while(1){
-        vTaskDelay(pdMS_TO_TICKS(500)); // Delay for 500 milliseconds
-        
-        // Read the current ticks count
-        current_ticks = atomic_load(&ticks_count); // Atomically read the ticks count
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Delay for 1000 milliseconds
 
-        // Calculate the difference in ticks
-        delta_ticks = current_ticks - last_ticks;
-        last_ticks = current_ticks; // Update last ticks for the next iteration
+        // Read the current ticks count
+        delta_ticks = atomic_load(&ticks_count); // Atomically read the ticks count
 
         // Get the current time in microseconds
         current_time = esp_timer_get_time(); // Get the current time in microseconds
@@ -109,8 +103,11 @@ extern "C" void app_main(){
         double revolutions = (double)delta_ticks / PPR; // Convert ticks to revolutions
         velocity_rpm = (revolutions / delta_time_sec) * 60.0;
 
+        printf("Ticks Count: %d\n", delta_ticks);
         printf("Delta Time: %.2f seconds\n", delta_time_sec);
         printf("Velocity: %.2f RPM\n", velocity_rpm);
+
+        atomic_store(&ticks_count, 0); // Reset the ticks count for the next measurement
     }
 }
 
