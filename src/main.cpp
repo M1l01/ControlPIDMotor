@@ -25,6 +25,10 @@
 
 //Constants for the encoder
 #define PPR 374
+#define N_SAMPLES 10 // Number of samples to average the velocity
+
+double buffer_velocity[N_SAMPLES] = {0}; // Buffer to store the velocity samples
+int buffer_index = 0; // Index to track the current position in the buffer
 
 // Global Variables
 
@@ -105,7 +109,18 @@ extern "C" void app_main(){
 
         printf("Ticks Count: %d\n", delta_ticks);
         printf("Delta Time: %.2f seconds\n", delta_time_sec);
-        printf("Velocity: %.2f RPM\n", velocity_rpm);
+
+        buffer_velocity[buffer_index] = velocity_rpm; // Store the velocity in the buffer
+        buffer_index = (buffer_index + 1) % N_SAMPLES; // Update the buffer index
+
+        // Calculate the average velocity from the buffer
+        double sum_velocity = 0.0;
+        for (int i = 0; i < N_SAMPLES; i++) {
+            sum_velocity += buffer_velocity[i]; // Sum all the velocities in the buffer
+        }
+
+        double average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
+        printf("Average Velocity: %.2f RPM\n", average_velocity);
 
         atomic_store(&ticks_count, 0); // Reset the ticks count for the next measurement
     }
