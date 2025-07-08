@@ -24,8 +24,9 @@
 #define CHANNEL_EN LEDC_CHANNEL_0 // Channel for the PWM signal
 
 //Constants for the encoder
-#define PPR 374
+#define TPR 1496
 #define N_SAMPLES 10 // Number of samples to average the velocity
+#define SAMPLE_TIME_MS 100 // Time in milliseconds to sample the velocity
 
 double buffer_velocity[N_SAMPLES] = {0}; // Buffer to store the velocity samples
 int buffer_index = 0; // Index to track the current position in the buffer
@@ -33,14 +34,15 @@ int buffer_index = 0; // Index to track the current position in the buffer
 // Global Variables
 
 //Variables to handle the encoder detection
-atomic_int ticks_count = 0; // Protected variable to count encoder ticks (374 ticks per revolution)
+atomic_uint_fast32_t ticks_count = 0; // Protected variable to count encoder ticks (1496 ticks per revolution)
 bool encoder_direction = true; // Variable to identify the direction of the motor (true for CCW, false for CW)
 
 //-------- Function Prototypes --------
 esp_err_t init_motor_gpio(gpio_num_t control_pin);
 void init_timer();
 esp_err_t init_irs(void);
-void isr_handler(void *arg);
+void isr_handler_a(void *arg);
+void isr_handler_b(void *arg);
 
 //-------- Main Function --------
 extern "C" void app_main(){
@@ -51,14 +53,6 @@ extern "C" void app_main(){
 
     // Configure the GPIO for motor PWM control (ENB)
     init_motor_gpio(PIN_ENB);
-
-    // Configure the GPIO for encoder channel B
-    gpio_config_t enc_b_config = {};
-    enc_b_config.pin_bit_mask = (1ULL << PIN_ENC_B);
-    enc_b_config.mode = GPIO_MODE_INPUT; // Set as input
-    enc_b_config.pull_up_en = GPIO_PULLUP_ENABLE; // Enable pull-up resistor
-    enc_b_config.pull_down_en = GPIO_PULLDOWN_DISABLE; // Disable pull-down resistor
-    gpio_config(&enc_b_config);
 
     // Configure the LEDC timer for PWM
     init_timer();
@@ -78,37 +72,36 @@ extern "C" void app_main(){
 
     // Local Variables
     // Velocity measure variables
-    int delta_ticks = 0;
+    uint32_t current_ticks = 0;
+    uint32_t prev_ticks = 0;
+    uint32_t delta_ticks = 0;
 
-    int64_t last_time = esp_timer_get_time(); // Get the current time in microseconds
-    int64_t current_time; // Variable to store the current time
-    double delta_time_sec;
     double velocity_rpm; // Variable to store the velocity in RPM
 
     // Set motor TURN high (CCW)
     gpio_set_level(PIN_TURN, 1);
-    // Set the motor ENB high in 60% duty cycle
-    ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, 2800); // Set duty cycle to maximum (60%)
+    // Set the motor ENB high in 100% duty cycle
+    ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, 4095); // Set duty cycle to maximum (100%)
     ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
 
     //loop
     while(1){
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Delay for 1000 milliseconds
+        vTaskDelay(pdMS_TO_TICKS(SAMPLE_TIME_MS)); // Delay for SAMPLE_TIME_MS milliseconds
 
         // Read the current ticks count
-        delta_ticks = atomic_load(&ticks_count); // Atomically read the ticks count
+        current_ticks = atomic_load(&ticks_count); // Atomically read the current ticks count
 
-        // Get the current time in microseconds
-        current_time = esp_timer_get_time(); // Get the current time in microseconds
-        delta_time_sec = (current_time - last_time) / 1e6; // Calculate the time difference in seconds
-        last_time = current_time; // Update last time for the next iteration
+        // Calculate the difference in ticks since the last measurement
+        delta_ticks = current_ticks - prev_ticks; // Calculate the difference in ticks
+        prev_ticks = current_ticks; // Update the previous ticks count
 
         // Calculate the velocity in RPM
-        double revolutions = (double)delta_ticks / PPR; // Convert ticks to revolutions
-        velocity_rpm = (revolutions / delta_time_sec) * 60.0;
+        double revolutions = (double)delta_ticks / TPR; // Convert ticks to revolutions
+        double time_minutes = SAMPLE_TIME_MS / 60000.0; // Convert milliseconds to minutes
+        velocity_rpm = revolutions / time_minutes; // Calculate RPM
 
-        printf("Ticks Count: %d\n", delta_ticks);
-        printf("Delta Time: %.2f seconds\n", delta_time_sec);
+        printf("Current Ticks: %ld, Delta Ticks: %ld\n", current_ticks, delta_ticks);
+        printf("Instantaneous Velocity: %.2f RPM\n", velocity_rpm);
 
         buffer_velocity[buffer_index] = velocity_rpm; // Store the velocity in the buffer
         buffer_index = (buffer_index + 1) % N_SAMPLES; // Update the buffer index
@@ -121,8 +114,8 @@ extern "C" void app_main(){
 
         double average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
         printf("Average Velocity: %.2f RPM\n", average_velocity);
-
-        atomic_store(&ticks_count, 0); // Reset the ticks count for the next measurement
+        printf("Direction: %s\n", encoder_direction ? "CCW" : "CW");
+        printf("------------------------\n"); // Reset the ticks count for the next measurement
     }
 }
 
@@ -154,34 +147,43 @@ void init_timer(){
 
 // Initialize the interrput to lecture of encoders
 esp_err_t init_irs(void) {
+    // Configure encoder channel A
     gpio_config_t enc_a_config = {};
     enc_a_config.pin_bit_mask = (1ULL << PIN_ENC_A);
     enc_a_config.mode = GPIO_MODE_INPUT;
     enc_a_config.pull_up_en = GPIO_PULLUP_ENABLE;
     enc_a_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    enc_a_config.intr_type = GPIO_INTR_POSEDGE; // Interrupt on rising edge
+    enc_a_config.intr_type = GPIO_INTR_ANYEDGE; // Interrupt on RISING and FALLING edges
     gpio_config(&enc_a_config);
+
+    // Configure encoder channel B
+    gpio_config_t enc_b_config = {};
+    enc_b_config.pin_bit_mask = (1ULL << PIN_ENC_B);
+    enc_b_config.mode = GPIO_MODE_INPUT;
+    enc_b_config.pull_up_en = GPIO_PULLUP_ENABLE;
+    enc_b_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    enc_b_config.intr_type = GPIO_INTR_ANYEDGE; // Interrupt on RISING and FALLING edges
+    gpio_config(&enc_b_config);
 
     // Installing the interrupts service
     gpio_install_isr_service(0);
 
-    gpio_isr_handler_add(PIN_ENC_A, isr_handler, NULL);
+    gpio_isr_handler_add(PIN_ENC_A, isr_handler_a, NULL); // Add ISR handler for channel A
+    gpio_isr_handler_add(PIN_ENC_B, isr_handler_b, NULL); // Add ISR handler for channel B
 
     return ESP_OK;
 }
 
-// Function to count encoder tiks and identify direction
+// Function to count encoder tiks (channel A)
 // This function will be called in the ISR
-void isr_handler(void *arg) {
+void isr_handler_a(void *arg) {
     //Increment the encoder count
     atomic_fetch_add(&ticks_count, 1); // Atomically increment the ticks count
-    // Check the state of channel B to determine direction
-    int level_b = gpio_get_level(PIN_ENC_B);
-    if (level_b == 1) {
-        // If channel B is high, the direction is CCW
-        encoder_direction = true;
-    } else {
-        // If channel B is low, the direction is CW
-        encoder_direction = false;
-    }
+}
+
+// Function to count encoder tiks (channel B)
+// This function will be called in the ISR
+void isr_handler_b(void *arg) {
+    // Check the state of channel A to determine direction
+    atomic_fetch_add(&ticks_count, 1); // Atomically increment the ticks count
 }
