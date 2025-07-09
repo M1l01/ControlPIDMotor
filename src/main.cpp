@@ -100,9 +100,6 @@ extern "C" void app_main(){
         double time_minutes = SAMPLE_TIME_MS / 60000.0; // Convert milliseconds to minutes
         velocity_rpm = revolutions / time_minutes; // Calculate RPM
 
-        printf("Current Ticks: %ld, Delta Ticks: %ld\n", current_ticks, delta_ticks);
-        printf("Instantaneous Velocity: %.2f RPM\n", velocity_rpm);
-
         buffer_velocity[buffer_index] = velocity_rpm; // Store the velocity in the buffer
         buffer_index = (buffer_index + 1) % N_SAMPLES; // Update the buffer index
 
@@ -113,9 +110,8 @@ extern "C" void app_main(){
         }
 
         double average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
-        printf("Average Velocity: %.2f RPM\n", average_velocity);
-        printf("Direction: %s\n", encoder_direction ? "CCW" : "CW");
-        printf("------------------------\n"); // Reset the ticks count for the next measurement
+        uint32_t time_ms = esp_timer_get_time() / 1000; // Convert microseconds to milliseconds
+        printf("%lu,%.2f\n", time_ms, average_velocity);
     }
 }
 
