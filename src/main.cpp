@@ -1,6 +1,9 @@
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 #include <driver/gpio.h> // GPIO driver for input/output
 #include <driver/ledc.h> // LEDC driver for PWM
+#include <driver/uart.h> // UART driver for serial communication
 #include <esp_err.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -28,14 +31,29 @@
 #define N_SAMPLES 10 // Number of samples to average the velocity
 #define SAMPLE_TIME_MS 100 // Time in milliseconds to sample the velocity
 
+//UART Configuration
+#define UART_PORT_NUM UART_NUM_0 // UART port number
+#define UART_BAUD_RATE 115200 // Baud rate for UART communication
+#define UART_DATA_BITS UART_DATA_8_BITS // Data bits configuration
+#define UART_PARITY UART_PARITY_DISABLE // Parity configuration
+#define UART_STOP_BITS UART_STOP_BITS_1 // Stop bits configuration
+#define UART_FLOW_CTRL UART_HW_FLOWCTRL_DISABLE // Flow control configuration
+#define UART_SOURCE_CLK UART_SCLK_DEFAULT // Source clock for UART
+
+#define BUF_SIZE (1024)
+
 double buffer_velocity[N_SAMPLES] = {0}; // Buffer to store the velocity samples
 int buffer_index = 0; // Index to track the current position in the buffer
 
 // Global Variables
 
-//Variables to handle the encoder detection
+// Variables to handle the encoder detection
 atomic_uint_fast32_t ticks_count = 0; // Protected variable to count encoder ticks (1496 ticks per revolution)
 bool encoder_direction = true; // Variable to identify the direction of the motor (true for CCW, false for CW)
+
+// Variables for simulink communication
+volatile float simulink_command = 0.0; // Command received from Simulink
+volatile bool new_command_received = false; // Flag to indicate if a new command has been received
 
 //-------- Function Prototypes --------
 esp_err_t init_motor_gpio(gpio_num_t control_pin);
@@ -43,6 +61,9 @@ void init_timer();
 esp_err_t init_irs(void);
 void isr_handler_a(void *arg);
 void isr_handler_b(void *arg);
+esp_err_t init_uart(void);
+void uart_receive_task(void *arg);
+void set_motor_pwm(float speed_percent);
 
 //-------- Main Function --------
 extern "C" void app_main(){
@@ -67,8 +88,14 @@ extern "C" void app_main(){
     channel_config.hpoint = 0; // Hpoint value
     ledc_channel_config(&channel_config); // Configure the channel
 
+    // Initialize the UART for simulink communication
+    init_uart();
+
     // Initialize the encoder interrupt of channel A
     init_irs();
+
+    //Create a task to receive data from UART
+    xTaskCreate(uart_receive_task, "uart_receive_task", 4096, NULL, 10, NULL);
 
     // Local Variables
     // Velocity measure variables
@@ -80,13 +107,18 @@ extern "C" void app_main(){
 
     // Set motor TURN high (CCW)
     gpio_set_level(PIN_TURN, 1);
-    // Set the motor ENB high in 100% duty cycle
-    ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, 4095); // Set duty cycle to maximum (100%)
-    ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
+
+    set_motor_pwm(0.0); // Initialize the motor PWM to 0% duty cycle
 
     //loop
     while(1){
         vTaskDelay(pdMS_TO_TICKS(SAMPLE_TIME_MS)); // Delay for SAMPLE_TIME_MS milliseconds
+
+        // Check if a new command has been received from Simulink
+        if (new_command_received) {
+            set_motor_pwm(simulink_command); // Set the motor PWM based on the received command
+            new_command_received = false; // Reset the flag after processing the command
+        }
 
         // Read the current ticks count
         current_ticks = atomic_load(&ticks_count); // Atomically read the current ticks count
@@ -110,8 +142,9 @@ extern "C" void app_main(){
         }
 
         double average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
-        uint32_t time_ms = esp_timer_get_time() / 1000; // Convert microseconds to milliseconds
-        printf("%lu,%.2f\n", time_ms, average_velocity);
+        //uint32_t time_ms = esp_timer_get_time() / 1000; // Convert microseconds to milliseconds
+        //printf("%lu,%.2f\n", time_ms, average_velocity);
+        printf("%.2f\n", average_velocity); // Send values to simulink
     }
 }
 
@@ -182,4 +215,71 @@ void isr_handler_a(void *arg) {
 void isr_handler_b(void *arg) {
     // Check the state of channel A to determine direction
     atomic_fetch_add(&ticks_count, 1); // Atomically increment the ticks count
+}
+
+esp_err_t init_uart(void) {
+    uart_config_t uart_config = {};
+    uart_config.baud_rate = UART_BAUD_RATE; // Set the baud rate
+    uart_config.data_bits = UART_DATA_BITS; // Set the data bits
+    uart_config.parity = UART_PARITY; // Set the parity
+    uart_config.stop_bits = UART_STOP_BITS; // Set the stop bits
+    uart_config.flow_ctrl = UART_FLOW_CTRL; // Set the flow control
+    uart_config.source_clk = UART_SOURCE_CLK; // Set the source clock
+
+    // Install the UART driver
+    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config)); // Configure the UART parameters
+    ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)); // Set the UART pins (TX, RX, RTS, CTS)
+
+    return ESP_OK;
+}
+
+// Task to receive data from Simulink via UART
+void uart_receive_task(void *arg) {
+    uint8_t *data = (uint8_t *)malloc(BUF_SIZE); // Buffer to store received data
+    char command_buffer[32];
+    int buffer_pos = 0;
+    
+    while (1) {
+        // Read data from UART
+        int len = uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE, 20 / portTICK_PERIOD_MS);
+        // Process each received byte
+        for (int i = 0; i < len; i++){
+            char c = (char)data[i];
+
+            // Check for end of command (newline character)
+            if (c == '\n' || c == '\r') {
+                if (buffer_pos > 0) {
+                    command_buffer[buffer_pos] = '\0'; 
+
+                    // Parse the command as a float
+                    float received_value = atof(command_buffer);
+
+                    // Validate the received value
+                    if (received_value >= 0.0 && received_value <= 100.0) {
+                        simulink_command = received_value;
+                        new_command_received = true;
+                    }
+
+                    buffer_pos = 0; // Reset buffer position
+                }
+            }else if (buffer_pos < sizeof(command_buffer) - 1){
+                command_buffer[buffer_pos++] = c;
+            }
+        }
+    }
+    free(data);
+}
+
+void set_motor_pwm(float speed_percent) {
+    // Clamp the speed percentage to the range [0, 100]
+    if (speed_percent < 0.0) speed_percent = 0.0;
+    if (speed_percent > 100.0) speed_percent = 100.0;
+
+    // Convert the speed percentage to a duty cycle value
+    uint32_t duty_cycle = (uint32_t)((speed_percent / 100.0) * 4095); // Convert to 12-bit duty cycle
+
+    // Set PWM duty cycle
+    ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, duty_cycle); // Set the duty cycle
+    ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
 }
