@@ -55,6 +55,7 @@ bool encoder_direction = true; // Variable to identify the direction of the moto
 // Variables for simulink communication
 volatile float simulink_command = 0.0; // Command received from Simulink
 volatile bool new_command_received = false; // Flag to indicate if a new command has been received
+volatile bool activate_motor = false;
 
 //-------- Function Prototypes --------
 esp_err_t init_motor_gpio(gpio_num_t control_pin);
@@ -96,7 +97,7 @@ extern "C" void app_main(){
     init_irs();
 
     //Create a task to receive data from UART
-    //xTaskCreate(uart_receive_task, "uart_receive_task", 4096, NULL, 10, NULL);
+    xTaskCreate(uart_receive_task, "uart_receive_task", 4096, NULL, 10, NULL);
 
     // Local Variables
     // Velocity measure variables
@@ -135,7 +136,7 @@ extern "C" void app_main(){
 
         float average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
         average_velocity = average_velocity * 0.1047; //Convert to rad/s
-        printf("%.1f\n", average_velocity);
+        //printf("%.1f\n", average_velocity);
 
         vTaskDelay(pdMS_TO_TICKS(SAMPLE_TIME_MS)); // Delay for SAMPLE_TIME_MS milliseconds
     }
@@ -230,40 +231,27 @@ esp_err_t init_uart(void) {
 // Task to receive data from Simulink via UART
 void uart_receive_task(void *arg) {
     uint8_t *data = (uint8_t *)malloc(BUF_SIZE); // Buffer to store received data
-    char command_buffer[32];
-    int buffer_pos = 0;
     
     while (1) {
         // Read data from UART
         int len = uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE, 20 / portTICK_PERIOD_MS);
-        // Process each received byte
-        for (int i = 0; i < len; i++){
-            char c = (char)data[i];
-            
-            // Check for end of command (newline character)
-            if (c == '\n' || c == '\r') {
-                if (buffer_pos > 0) {
-                    command_buffer[buffer_pos] = '\0'; 
-                    
-                    // Parse the command as a float
-                    float received_value = atof(command_buffer);
-                    
-                    // Validate the received value
-                    if (received_value >= 0.0 && received_value <= 100.0) {
-                        simulink_command = received_value;
-                        new_command_received = true;
+
+        if (len > 0) {
+            for (int i = 0; i < len; i++) {
+                if (data[i] == '\n' || data[i] == '\r') {
+                    if (data[i-1] == '1'){
+                        printf("%d\n", 1);
+                    }else if (data[i-1] == '0') {
+                        printf("%d\n", 0);
                     }
-                    
-                    buffer_pos = 0; // Reset buffer position
                 }
-            }else if (buffer_pos < sizeof(command_buffer) - 1){
-                command_buffer[buffer_pos++] = c;
+                    
             }
         }
     }
     free(data);
 }
-
+/*
 void set_motor_pwm(float speed_percent) {
     // Clamp the speed percentage to the range [0, 100]
     if (speed_percent < 0.0) speed_percent = 0.0;
@@ -276,3 +264,4 @@ void set_motor_pwm(float speed_percent) {
     ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, duty_cycle); // Set the duty cycle
     ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
 }
+*/
