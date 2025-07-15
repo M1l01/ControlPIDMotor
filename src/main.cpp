@@ -53,9 +53,8 @@ atomic_uint_fast32_t ticks_count = 0; // Protected variable to count encoder tic
 bool encoder_direction = true; // Variable to identify the direction of the motor (true for CCW, false for CW)
 
 // Variables for simulink communication
-volatile float simulink_command = 0.0; // Command received from Simulink
+volatile int simulink_command = 0; // Command received from Simulink
 volatile bool new_command_received = false; // Flag to indicate if a new command has been received
-volatile bool activate_motor = false;
 
 //-------- Function Prototypes --------
 esp_err_t init_motor_gpio(gpio_num_t control_pin);
@@ -65,7 +64,7 @@ void isr_handler_a(void *arg);
 void isr_handler_b(void *arg);
 esp_err_t init_uart(void);
 void uart_receive_task(void *arg);
-void set_motor_pwm(float speed_percent);
+void set_motor_pwm(int activate_motor);
 
 //-------- Main Function --------
 extern "C" void app_main(){
@@ -109,9 +108,14 @@ extern "C" void app_main(){
 
     // Set motor TURN high (CCW)
     gpio_set_level(PIN_TURN, 1);
-
+    set_motor_pwm(0); // Set the motor PWM to 0 (off)
     //loop
     while(1){
+
+        if (new_command_received) {
+            new_command_received = false; // Reset the flag
+            set_motor_pwm(simulink_command); // Set the motor PWM based on the command received
+        }
         
         // Read the current ticks count
         current_ticks = atomic_load(&ticks_count); // Atomically read the current ticks count
@@ -136,7 +140,11 @@ extern "C" void app_main(){
 
         float average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
         average_velocity = average_velocity * 0.1047; //Convert to rad/s
-        //printf("%.1f\n", average_velocity);
+        if (average_velocity >= 10.0) {
+            printf("%.1f\n", average_velocity);
+        }else if (average_velocity < 10.0) {
+            printf("%.2f\n", average_velocity);
+        }
 
         vTaskDelay(pdMS_TO_TICKS(SAMPLE_TIME_MS)); // Delay for SAMPLE_TIME_MS milliseconds
     }
@@ -239,29 +247,24 @@ void uart_receive_task(void *arg) {
         if (len > 0) {
             for (int i = 0; i < len; i++) {
                 if (data[i] == '\n' || data[i] == '\r') {
-                    if (data[i-1] == '1'){
-                        printf("%d\n", 1);
-                    }else if (data[i-1] == '0') {
-                        printf("%d\n", 0);
+                    if (data[i-1] == 0 || data[i-1] == 1){
+                        //printf("%d\n", data[i-1]);
+                        simulink_command = (data[i-1] == 1) ? 1 : 0;
+                        new_command_received = true;
                     }
                 }
-                    
             }
         }
     }
     free(data);
 }
-/*
-void set_motor_pwm(float speed_percent) {
+
+void set_motor_pwm(int activate_motor) {
     // Clamp the speed percentage to the range [0, 100]
-    if (speed_percent < 0.0) speed_percent = 0.0;
-    if (speed_percent > 100.0) speed_percent = 100.0;
-    
-    // Convert the speed percentage to a duty cycle value
-    uint32_t duty_cycle = (uint32_t)((speed_percent / 100.0) * 4095); // Convert to 12-bit duty cycle
+    uint32_t duty_cycle = (activate_motor == 1) ? 4095 : 0; // Convert to 12-bit duty cycle
     
     // Set PWM duty cycle
     ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, duty_cycle); // Set the duty cycle
     ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
 }
-*/
+
