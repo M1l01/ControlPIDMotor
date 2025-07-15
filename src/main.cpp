@@ -9,6 +9,7 @@
 #include <freertos/task.h>
 #include <esp_timer.h>
 #include <stdatomic.h>
+#include <esp_log.h>
 
 //-------- Define GPIO pins ----------
 //Define GPIOs to control a motor driver (L298N)
@@ -40,7 +41,7 @@
 #define UART_FLOW_CTRL UART_HW_FLOWCTRL_DISABLE // Flow control configuration
 #define UART_SOURCE_CLK UART_SCLK_DEFAULT // Source clock for UART
 
-#define BUF_SIZE (1024)
+#define BUF_SIZE 1024
 
 double buffer_velocity[N_SAMPLES] = {0}; // Buffer to store the velocity samples
 int buffer_index = 0; // Index to track the current position in the buffer
@@ -95,7 +96,7 @@ extern "C" void app_main(){
     init_irs();
 
     //Create a task to receive data from UART
-    xTaskCreate(uart_receive_task, "uart_receive_task", 4096, NULL, 10, NULL);
+    //xTaskCreate(uart_receive_task, "uart_receive_task", 4096, NULL, 10, NULL);
 
     // Local Variables
     // Velocity measure variables
@@ -103,48 +104,40 @@ extern "C" void app_main(){
     uint32_t prev_ticks = 0;
     uint32_t delta_ticks = 0;
 
-    double velocity_rpm; // Variable to store the velocity in RPM
+    float velocity_rpm; // Variable to store the velocity in RPM
 
     // Set motor TURN high (CCW)
     gpio_set_level(PIN_TURN, 1);
 
-    set_motor_pwm(0.0); // Initialize the motor PWM to 0% duty cycle
-
     //loop
     while(1){
-        vTaskDelay(pdMS_TO_TICKS(SAMPLE_TIME_MS)); // Delay for SAMPLE_TIME_MS milliseconds
-
-        // Check if a new command has been received from Simulink
-        if (new_command_received) {
-            set_motor_pwm(simulink_command); // Set the motor PWM based on the received command
-            new_command_received = false; // Reset the flag after processing the command
-        }
-
+        
         // Read the current ticks count
         current_ticks = atomic_load(&ticks_count); // Atomically read the current ticks count
-
+        
         // Calculate the difference in ticks since the last measurement
         delta_ticks = current_ticks - prev_ticks; // Calculate the difference in ticks
         prev_ticks = current_ticks; // Update the previous ticks count
-
+        
         // Calculate the velocity in RPM
         double revolutions = (double)delta_ticks / TPR; // Convert ticks to revolutions
         double time_minutes = SAMPLE_TIME_MS / 60000.0; // Convert milliseconds to minutes
         velocity_rpm = revolutions / time_minutes; // Calculate RPM
-
+        
         buffer_velocity[buffer_index] = velocity_rpm; // Store the velocity in the buffer
         buffer_index = (buffer_index + 1) % N_SAMPLES; // Update the buffer index
-
+        
         // Calculate the average velocity from the buffer
         double sum_velocity = 0.0;
         for (int i = 0; i < N_SAMPLES; i++) {
             sum_velocity += buffer_velocity[i]; // Sum all the velocities in the buffer
         }
 
-        double average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
-        //uint32_t time_ms = esp_timer_get_time() / 1000; // Convert microseconds to milliseconds
-        //printf("%lu,%.2f\n", time_ms, average_velocity);
-        printf("%.2f\n", average_velocity); // Send values to simulink
+        float average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
+        average_velocity = average_velocity * 0.1047; //Convert to rad/s
+        printf("%.1f\n", average_velocity);
+
+        vTaskDelay(pdMS_TO_TICKS(SAMPLE_TIME_MS)); // Delay for SAMPLE_TIME_MS milliseconds
     }
 }
 
@@ -227,10 +220,10 @@ esp_err_t init_uart(void) {
     uart_config.source_clk = UART_SOURCE_CLK; // Set the source clock
 
     // Install the UART driver
-    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, BUF_SIZE, 0, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config)); // Configure the UART parameters
-    ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)); // Set the UART pins (TX, RX, RTS, CTS)
-
+    ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)); // Set the UART pins
+    
     return ESP_OK;
 }
 
@@ -246,21 +239,21 @@ void uart_receive_task(void *arg) {
         // Process each received byte
         for (int i = 0; i < len; i++){
             char c = (char)data[i];
-
+            
             // Check for end of command (newline character)
             if (c == '\n' || c == '\r') {
                 if (buffer_pos > 0) {
                     command_buffer[buffer_pos] = '\0'; 
-
+                    
                     // Parse the command as a float
                     float received_value = atof(command_buffer);
-
+                    
                     // Validate the received value
                     if (received_value >= 0.0 && received_value <= 100.0) {
                         simulink_command = received_value;
                         new_command_received = true;
                     }
-
+                    
                     buffer_pos = 0; // Reset buffer position
                 }
             }else if (buffer_pos < sizeof(command_buffer) - 1){
@@ -275,10 +268,10 @@ void set_motor_pwm(float speed_percent) {
     // Clamp the speed percentage to the range [0, 100]
     if (speed_percent < 0.0) speed_percent = 0.0;
     if (speed_percent > 100.0) speed_percent = 100.0;
-
+    
     // Convert the speed percentage to a duty cycle value
     uint32_t duty_cycle = (uint32_t)((speed_percent / 100.0) * 4095); // Convert to 12-bit duty cycle
-
+    
     // Set PWM duty cycle
     ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, duty_cycle); // Set the duty cycle
     ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
