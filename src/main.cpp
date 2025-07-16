@@ -56,6 +56,20 @@ bool encoder_direction = true; // Variable to identify the direction of the moto
 volatile int simulink_command = 0; // Command received from Simulink
 volatile bool new_command_received = false; // Flag to indicate if a new command has been received
 
+// Variables for PID control
+float cv;
+float cv_prev1;
+float error;
+float error_prev1;
+float error_prev2;
+
+float kp = 1.0; // Proportional gain
+float ki = 1.0; // Integral gain
+float kd = 0.01; // Derivative gain
+float Tm = 0.1; // Sample time in seconds
+
+float setpoint = 200.0; // Desired setpoint for the motor speed in RPM
+
 //-------- Function Prototypes --------
 esp_err_t init_motor_gpio(gpio_num_t control_pin);
 void init_timer();
@@ -139,12 +153,35 @@ extern "C" void app_main(){
         }
 
         float average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
-        average_velocity = average_velocity * 0.1047; //Convert to rad/s
-        if (average_velocity >= 10.0) {
-            printf("%.1f\n", average_velocity);
-        }else if (average_velocity < 10.0) {
-            printf("%.2f\n", average_velocity);
+        
+        float average_velocity_rads = average_velocity * 0.1047; //Convert to rad/s
+        if (average_velocity_rads >= 10.0) {
+            printf("%.1f\n", average_velocity_rads);
+        }else if (average_velocity_rads < 10.0) {
+            printf("%.2f\n", average_velocity_rads);
         }
+
+        // PID Control
+        // Calculate the Error
+        error = setpoint - average_velocity;
+
+        //Calculate the Difference ecuations
+        cv = cv_prev1 + (kp + (kd/Tm))*error + (-kp + (ki*Tm) - 2*(kd/Tm))*error_prev1 + (kd/Tm)*error_prev2;
+        // recursively update the previous values
+        cv_prev1 = cv;
+        error_prev2 = error_prev1;
+        error_prev1 = error;
+
+        // CV saturation
+        if (cv > 500.0) {
+            cv = 500.0;
+        } else if (cv < 0.0) {
+            cv = 0.0;
+        }
+
+        // Set the motor PWM based on the PID control output
+        ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, (uint32_t)(cv * (4095.0 / 500.0))); // Scale cv to 12-bit duty cycle
+        ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
 
         vTaskDelay(pdMS_TO_TICKS(SAMPLE_TIME_MS)); // Delay for SAMPLE_TIME_MS milliseconds
     }
