@@ -63,12 +63,12 @@ float error;
 float error_prev1;
 float error_prev2;
 
-float kp = 1.0; // Proportional gain
-float ki = 1.0; // Integral gain
-float kd = 0.01; // Derivative gain
+double kp = 0.186493; // Proportional gain
+double ki = 2.105121; // Integral gain
+double kd = 0.0; // Derivative gain
 float Tm = 0.1; // Sample time in seconds
 
-float setpoint = 200.0; // Desired setpoint for the motor speed in RPM
+float setpoint = 300.0; // Desired setpoint for the motor speed in RPM
 
 //-------- Function Prototypes --------
 esp_err_t init_motor_gpio(gpio_num_t control_pin);
@@ -153,13 +153,6 @@ extern "C" void app_main(){
         }
 
         float average_velocity = sum_velocity / N_SAMPLES; // Calculate the average velocity
-        
-        float average_velocity_rads = average_velocity * 0.1047; //Convert to rad/s
-        if (average_velocity_rads >= 10.0) {
-            printf("%.1f\n", average_velocity_rads);
-        }else if (average_velocity_rads < 10.0) {
-            printf("%.2f\n", average_velocity_rads);
-        }
 
         // PID Control
         // Calculate the Error
@@ -182,6 +175,8 @@ extern "C" void app_main(){
         // Set the motor PWM based on the PID control output
         ledc_set_duty(TIMER_SPEED_MODE, CHANNEL_EN, (uint32_t)(cv * (4095.0 / 500.0))); // Scale cv to 12-bit duty cycle
         ledc_update_duty(TIMER_SPEED_MODE, CHANNEL_EN); // Update the duty cycle
+
+        printf("Setpoint: %.2f RPM, Average Velocity: %.2f RPM, Control Value: %.2f\n", setpoint, average_velocity, cv);
 
         vTaskDelay(pdMS_TO_TICKS(SAMPLE_TIME_MS)); // Delay for SAMPLE_TIME_MS milliseconds
     }
